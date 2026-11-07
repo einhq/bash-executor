@@ -389,6 +389,22 @@ function unquoteText(text: string): string {
 /** Text run as the shell's own input: kept in the history, and echoed as it is read. */
 type ReadInput = { history?: boolean; echo?: boolean };
 
+/** What one run of source has to itself; see `AstExecutor.runs`. */
+type RunState = {
+  /** The source running, which error snippets, `set -v` and function bodies are cut from */
+  source?: string;
+  /**
+   * Where the source being run starts, for `$LINENO`: 0 in a script and in a
+   * sourced file, the line before its own in an `eval`. The name is the file's
+   * a diagnostic from it begins with, when it is not the script's.
+   */
+  frame: { base: number; name?: string };
+  /** The script running is a `bash -c` string, which an unset parameter ends with 127 */
+  commandString: boolean;
+  /** The script whose lines were echoed as they were read, which `set -v` does not echo again */
+  echoedScript?: AstNodeScript;
+};
+
 /**
  * The process substitutions made while expanding one command's words.
  *
@@ -443,7 +459,6 @@ export type AstExecutorOptions = {
  */
 export class AstExecutor {
   private shell: ShellIf;
-  private currentSource?: string;
   private builtins?: BuiltinRegistry;
 
   /** See `AstExecutorOptions.lineNumbers` */
@@ -453,14 +468,43 @@ export class AstExecutor {
   private unterminatedHereDocuments: 'error' | 'end';
 
   /**
-   * Where the source being run starts, for `$LINENO`: 0 in a script and in a
-   * sourced file, the line before its own in an `eval`. The name is the file's
-   * a diagnostic from it begins with, when it is not the script's.
+   * What a run of source has to itself, kept per async flow so that runs going
+   * on at once in one executor — a host's commands that run scripts in
+   * parallel — each see their own, and what one started keeps it.
    */
-  private sourceFrame: { base: number; name?: string } = { base: 0 };
+  private runs = new AsyncLocalStorage<RunState>();
 
-  /** The script whose lines were echoed as they were read, which `set -v` does not echo again */
-  private echoedScript?: AstNodeScript;
+  /** The run state outside any `execute`. */
+  private rootRun: RunState = { frame: { base: 0 }, commandString: false };
+
+  private get run(): RunState {
+    return this.runs.getStore() ?? this.rootRun;
+  }
+
+  /** Run `fn` with the run state changed by `change`, and only there. */
+  private withRun<T>(change: Partial<RunState>, fn: () => Promise<T>): Promise<T> {
+    return this.runs.run({ ...this.run, ...change }, fn);
+  }
+
+  /** See `RunState.source` */
+  private get currentSource(): string | undefined {
+    return this.run.source;
+  }
+
+  /** See `RunState.frame` */
+  private get sourceFrame(): { base: number; name?: string } {
+    return this.run.frame;
+  }
+
+  /** See `RunState.echoedScript` */
+  private get echoedScript(): AstNodeScript | undefined {
+    return this.run.echoedScript;
+  }
+
+  /** Whether the script running is a `bash -c` string, which an unset parameter ends with 127. */
+  private get commandString(): boolean {
+    return this.run.commandString;
+  }
 
   constructor(shell: ShellIf, options?: AstExecutorOptions) {
     this.shell = shell;
@@ -526,15 +570,7 @@ export class AstExecutor {
    * with `$LINENO` counted from where it stands.
    */
   private async inSourceFrame<T>(frame: { base: number; name?: string }, run: () => Promise<T>): Promise<T> {
-    const previous = this.sourceFrame;
-
-    this.sourceFrame = frame;
-
-    try {
-      return await run();
-    } finally {
-      this.sourceFrame = previous;
-    }
+    return await this.withRun({ frame }, run);
   }
 
   /**
@@ -626,8 +662,14 @@ export class AstExecutor {
     ctx: ExecContextIf,
     opts: { exited?: { value: boolean }; file?: string; command?: boolean; line?: number; history?: boolean } = {},
   ): Promise<number> {
-    this.commandString = opts.command ?? false;
+    return await this.withRun({ commandString: opts.command ?? false }, () => this.executeAs(source, ctx, opts));
+  }
 
+  private async executeAs(
+    source: string,
+    ctx: ExecContextIf,
+    opts: { exited?: { value: boolean }; file?: string; command?: boolean; line?: number; history?: boolean },
+  ): Promise<number> {
     // A script read from a file is `main` at the bottom of the call stack, and
     // the file its BASH_SOURCE; a string run as it is has no such frame
     if (opts.file !== undefined && !ctx.getArray('BASH_SOURCE')?.length) {
@@ -667,13 +709,6 @@ export class AstExecutor {
       }
     }
 
-    // Saved rather than cleared: `eval`/`source` run through here too, and the
-    // script around them keeps its source, for a snippet in an error and for
-    // `set -v` to echo
-    const previous = this.currentSource;
-
-    this.currentSource = source;
-
     // Resolvers given here will be evaluated at parse time.
     // Most things we want to evaluate at execution time and
     // that is instead done during execution with resolveExpansions.
@@ -688,16 +723,16 @@ export class AstExecutor {
       deferTildeExpansion: true,
     };
 
+    // `eval`/`source` run through here too, and the script around them keeps
+    // its source, for a snippet in an error and for `set -v` to echo
     try {
-      return await this.readAndRun(source, ctx, options, input);
+      return await this.withRun({ source }, () => this.readAndRun(source, ctx, options, input));
     } catch (err) {
       // Enhance BashSyntaxError with full source context
       if (err instanceof BashSyntaxError) {
         throw this.enhanceSyntaxError(err, source);
       }
       throw err;
-    } finally {
-      this.currentSource = previous;
     }
   }
 
@@ -738,16 +773,8 @@ export class AstExecutor {
         const to = await this.readCommandLines(lines, from, ctx, options, input.echo ?? false);
         const text = lines.map((line, i) => i < from ? ' '.repeat(line.length) : line).slice(0, to).join('\n');
         const ast = parse(text, { ...options, posix: ctx.getShellOption('posix') }) as AstNodeScript;
-        const echoed = this.echoedScript;
-
         // Echoed as read already
-        this.echoedScript = ast;
-
-        try {
-          code = await this.executeScript(ast, ctx, { state: this.parseState(ctx) });
-        } finally {
-          this.echoedScript = echoed;
-        }
+        code = await this.withRun({ echoedScript: ast }, () => this.executeScript(ast, ctx, { state: this.parseState(ctx) }));
 
         if (isExitSignal(code) || isReturnSignal(code)) {
           return code;
@@ -3785,9 +3812,6 @@ export class AstExecutor {
     return home && home !== `~${prefix}` ? home : undefined;
   }
 
-  /** Whether the script running is a `bash -c` string, which an unset parameter ends with 127. */
-  private commandString = false;
-
   /** Whether `ctx` runs in a subshell, `( … )` or `$( … )`, rather than the shell itself. */
   private inSubshell(ctx: ExecContextIf): boolean {
     for (let at: ExecContextIf | undefined = ctx; at; at = at.getParent()) {
@@ -4031,14 +4055,7 @@ export class AstExecutor {
 
         if (rest.length || node?.type !== 'Function' || (node as AstNodeFunction).name.text !== name) continue;
 
-        const previous = this.currentSource;
-        this.currentSource = source;
-
-        try {
-          await this.registerFunction(node as AstNodeFunction, ctx);
-        } finally {
-          this.currentSource = previous;
-        }
+        await this.withRun({ source }, () => this.registerFunction(node as AstNodeFunction, ctx));
       } catch {
         // Not a function definition: left alone, as bash does
       }
