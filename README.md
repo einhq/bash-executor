@@ -43,6 +43,10 @@ const exitCode = await executor.execute('echo "Hello World"', ctx);
 commands are processes, redirections are files and globs read directories. [`conformance/cli.ts`](./conformance/cli.ts)
 uses it to run scripts as `bash` would, from bash's own command line.
 
+A script shares its host's event loop. Evaluation gives the loop a turn every 50 ms, so a loop that does no I/O, such as
+`while ((1)); do :; done`, still lets the host's timers, sockets and other scripts run, and stops when the context's
+abort signal (`ctx.setAbortSignal`, or `signal` to `executeAndCapture`) is raised, by a timeout say.
+
 ## Arrays and field splitting
 
 Indexed arrays and IFS field splitting work as in bash:

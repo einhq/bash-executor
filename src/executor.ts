@@ -107,6 +107,32 @@ const ALWAYS_SET_PARAMS = new Set(['?', '#', '$', '0', '-', '_', '@', '*']);
 const UNBOUND_VARIABLE_CODE = 127 as const;
 
 /**
+ * How long evaluation runs before it gives the host's event loop a turn. A loop of
+ * builtins and arithmetic awaits only promises that are already settled, so without
+ * this its host's timers, sockets and other shells wait until the loop ends, and
+ * an abort signal a timer or a read would raise is never raised. A turn costs a
+ * timer's millisecond or two, so the turns are that much apart.
+ */
+const YIELD_EVERY_MS = 50;
+
+// Nodes run between looks at the clock, which costs about what a node does
+const NODES_PER_CLOCK_READ = 64;
+
+// When evaluation last let the event loop run, in every executor of the process,
+// and the nodes run since the clock was last read
+let lastYield = performance.now();
+let nodesSinceClock = 0;
+
+/** Give the event loop a turn when evaluation has run `YIELD_EVERY_MS` without one. */
+async function yieldWhenDue(): Promise<void> {
+  if (++nodesSinceClock < NODES_PER_CLOCK_READ) return;
+  nodesSinceClock = 0;
+  if (performance.now() - lastYield < YIELD_EVERY_MS) return;
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  lastYield = performance.now();
+}
+
+/**
  * `break N` and `continue N` are carried out of a loop's body as reserved
  * codes, one per number of loops still to leave: each loop they pass through
  * takes one off, and the last one breaks or continues.
@@ -1680,6 +1706,8 @@ export class AstExecutor {
    * @returns {Promise<number>} - The exit code of the executed node.
    */
   public async executeNode(node: AstNode, ctx: ExecContextIf): Promise<number> {
+    await yieldWhenDue();
+
     const signal = ctx.getAbortSignal();
     if (signal?.aborted) {
       throw signal.reason ?? new Error('execution aborted');
