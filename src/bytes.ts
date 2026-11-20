@@ -47,7 +47,7 @@ export function encodeShellText(text: string): Uint8Array {
     if (piece.length === 1 && /[\udc80-\udcff]/.test(piece)) {
       parts.push(piece.charCodeAt(0) - BYTE_BASE);
     } else if (piece) {
-      parts.push(...encoder.encode(piece));
+      for (const byte of encoder.encode(piece)) parts.push(byte);
     }
   }
 

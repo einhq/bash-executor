@@ -262,7 +262,7 @@ export async function expandPattern(
         else if (base.path !== '') next.push({ path: literalPrefix && !base.path.endsWith('/') ? `${base.path}/` : base.path, directory: true });
 
         // A link to a directory matches `**/`, but what is inside it is not looked for
-        next.push(...(await descend(base.path, !last || trailingSlash)).filter((f) => last || !f.link));
+        for (const f of await descend(base.path, !last || trailingSlash)) if (last || !f.link) next.push(f);
       }
 
       found = next.filter((f) => f.path !== '' || !last);
@@ -342,7 +342,7 @@ export async function expandPattern(
       if (entry.directory) {
         out.push({ path, directory: true, link: entry.link });
         // A link to a directory is listed, not gone into
-        if (!entry.link) out.push(...await descend(path, directoriesOnly));
+        if (!entry.link) { for (const found of await descend(path, directoriesOnly)) out.push(found); }
       } else if (!directoriesOnly) {
         out.push({ path, directory: false });
       }

@@ -2,6 +2,7 @@ import type { AstNodeCompoundList } from '@ein/bash-parser';
 import type { FunctionDefinition } from './print-command.ts';
 import { JobTable } from './jobs.ts';
 import { History } from './history.ts';
+import { ValueTooLargeError } from './errors.ts';
 import type { CompSpec } from './completion.ts';
 import {
   type DeclareOptions,
@@ -22,6 +23,38 @@ const DYNAMIC_PARAMS = ['SECONDS', 'EPOCHSECONDS', 'EPOCHREALTIME', 'RANDOM', 'S
 
 /** The dynamic variables bash makes readonly: the lists of options that are on */
 const OPTION_LISTS = new Set(['SHELLOPTS', 'BASHOPTS']);
+
+/**
+ * The most characters a variable holds unless the host sets another bound: a
+ * value that doubles in a loop reaches it in about 24 passes, long before the
+ * process runs out of memory.
+ */
+export const DEFAULT_VALUE_LIMIT = 16 * 1024 * 1024;
+
+/**
+ * What an array's element costs over its characters, about what it takes in
+ * memory and to expand: a million empty ones are what 16 Mi characters are.
+ */
+const ELEMENT_COST = 16;
+
+/**
+ * What the shell sets itself, from text that is already there — the command, its
+ * last word, a match — which the value limit does not hold.
+ */
+const SHELL_SET = new Set([
+  'BASH_COMMAND',
+  '_',
+  'BASH_EXECUTION_STRING',
+  'BASH_ARGV',
+  'BASH_ARGC',
+  'BASH_LINENO',
+  'BASH_SOURCE',
+  'FUNCNAME',
+  'PIPESTATUS',
+  'BASH_REMATCH',
+  'COMP_WORDS',
+  'COMP_LINE',
+]);
 
 /** The next subshell's BASHPID: no process of its own, so a number above Linux's pids */
 let nextSubshellPid = 2 ** 22 + 100_000;
@@ -106,6 +139,7 @@ export class ExecContext implements ExecContextIf {
   private fds: Record<string, string> = {};
   private options!: Record<string, boolean>;
   private abortSignal?: AbortSignal;
+  private valueLimit?: number;
   private hostData?: unknown;
   // undefined means "whatever the shell above says"; set explicitly, it decides
   private errexitSuppressed?: boolean;
@@ -216,6 +250,7 @@ export class ExecContext implements ExecContextIf {
     // `if ( false; echo here ); then` — the exemption covers the subshell too
     ctx.errexitSuppressed = this.getErrexitSuppressed();
     ctx.abortSignal = this.getAbortSignal();
+    ctx.valueLimit = this.getValueLimit();
     ctx.hostData = this.getHostData();
 
     return ctx;
@@ -227,6 +262,21 @@ export class ExecContext implements ExecContextIf {
 
   setAbortSignal(signal: AbortSignal | undefined): void {
     this.abortSignal = signal;
+  }
+
+  getValueLimit(): number {
+    return this.valueLimit ?? this.parent?.getValueLimit() ?? DEFAULT_VALUE_LIMIT;
+  }
+
+  setValueLimit(limit: number | undefined): void {
+    this.valueLimit = limit;
+  }
+
+  /** Throw when `size` characters are more than a variable `name` may hold here. */
+  private bounded(name: string, size: number): void {
+    const limit = this.getValueLimit();
+
+    if (size > limit && !SHELL_SET.has(name)) throw new ValueTooLargeError(name, size, limit);
   }
 
   getHostData(): unknown {
@@ -611,6 +661,7 @@ export class ExecContext implements ExecContextIf {
 
   setArrayElement(name: string, index: number, value: string): void {
     name = this.ref(name);
+    this.bounded(name, value.length);
 
     // DIRSTACK[N]=dir changes the Nth entry `dirs` shows; the working directory, 0, stays
     if (name === 'DIRSTACK' && !this.lookup(name)) {
@@ -701,6 +752,7 @@ export class ExecContext implements ExecContextIf {
 
   setAssocElement(name: string, key: string, value: string): void {
     name = this.ref(name);
+    this.bounded(name, key.length + value.length);
 
     const owner = this.ownerOf(name);
     const variable = owner.vars.get(name) ?? newVariable('assoc');
@@ -962,6 +1014,8 @@ export class ExecContext implements ExecContextIf {
 
   /** `name=value` on the variable `scope` holds, made there if it has none; an array takes it as element 0. */
   private assign(scope: ExecContext, name: string, value: string): Variable {
+    this.bounded(name, value.length);
+
     const variable = scope.vars.get(name) ?? newVariable('scalar');
 
     scope.vars.set(name, variable);
@@ -1002,6 +1056,8 @@ export class ExecContext implements ExecContextIf {
   }
 
   private storeArray(scope: ExecContext, name: string, values: string[]): void {
+    this.bounded(name, values.reduce((total, value) => total + ELEMENT_COST + (value?.length ?? 0), 0));
+
     const variable = scope.vars.get(name) ?? newVariable('array');
 
     variable.kind = 'array';
@@ -1010,6 +1066,8 @@ export class ExecContext implements ExecContextIf {
   }
 
   private storeAssoc(scope: ExecContext, name: string, values: Record<string, string>): void {
+    this.bounded(name, Object.entries(values).reduce((total, [key, value]) => total + ELEMENT_COST + key.length + value.length, 0));
+
     const variable = scope.vars.get(name) ?? newVariable('assoc');
 
     variable.kind = 'assoc';

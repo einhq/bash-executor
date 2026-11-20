@@ -530,6 +530,16 @@ export interface ExecContextIf {
   setAbortSignal(signal: AbortSignal | undefined): void;
 
   /**
+   * The most characters a variable may hold in this context: a string's, or all
+   * an array's elements together, each counting 16 more. An assignment past it aborts its command
+   * (`ValueTooLargeError`). `DEFAULT_VALUE_LIMIT` unless set here or above.
+   */
+  getValueLimit(): number;
+
+  /** Sets the most characters a variable may hold, for this context and its children. */
+  setValueLimit(limit: number | undefined): void;
+
+  /**
    * Gets the value the host gave this context, or the nearest context it was made from. The
    * executor never reads it: it is how a host tells, from the context a command runs in, which of
    * its own runs the command belongs to.

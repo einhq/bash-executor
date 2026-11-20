@@ -47,6 +47,16 @@ A script shares its host's event loop. Evaluation gives the loop a turn every 50
 `while ((1)); do :; done`, still lets the host's timers, sockets and other scripts run, and stops when the context's
 abort signal (`ctx.setAbortSignal`, or `signal` to `executeAndCapture`) is raised, by a timeout say.
 
+Memory is bounded where bash's is not, so a value that doubles in a loop ends its command rather than the process:
+
+- A variable holds at most 16 Mi characters (`DEFAULT_VALUE_LIMIT`; `ctx.setValueLimit` sets another for a context and
+  those made from it), an array all its elements together, each counting 16 more. An assignment past it aborts its
+  command: `s: value too large: … characters, more than …`. What the shell sets itself, such as `BASH_COMMAND`, is not
+  held to it.
+- A word splits into at most a million fields (`MAX_WORD_FIELDS`), counted before the splitting, which is one step the
+  event loop gets no turn in: `$s: expands to more than 1000000 words`.
+- @ein/bash-parser bounds brace expansion the same way.
+
 ## Arrays and field splitting
 
 Indexed arrays and IFS field splitting work as in bash:

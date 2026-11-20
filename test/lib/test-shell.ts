@@ -37,7 +37,7 @@ export type MockCommandHandler = (
  */
 export class TestShell implements ShellIf {
   private executor: AstExecutor;
-  private ctx: ExecContext;
+  ctx: ExecContext;
   private pipes: Map<string, PipeBuffer>;
   private pipeCounter: number;
   private mockCommands: Map<string, MockCommandHandler>;

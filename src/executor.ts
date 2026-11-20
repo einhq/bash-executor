@@ -84,6 +84,7 @@ import {
   NoClobberError,
   ReadonlyVariableError,
   RedirectionError,
+  TooManyFieldsError,
   UnboundVariableError,
   UnknownNodeTypeError,
   UnsupportedOperatorError,
@@ -105,6 +106,56 @@ const ALWAYS_SET_PARAMS = new Set(['?', '#', '$', '0', '-', '_', '@', '*']);
 
 // What bash running a -c string exits with when an expansion fails
 const UNBOUND_VARIABLE_CODE = 127 as const;
+
+/**
+ * The most fields one word splits into. Quote removal and splitting are one step
+ * without a turn for the event loop, at about 3 µs a field.
+ */
+export const MAX_WORD_FIELDS = 1_000_000;
+
+/**
+ * At least how many fields `value` splits into, read in one pass before the
+ * splitting: every `FIELD_MARKER`, and in what an expansion gave outside quotes,
+ * the IFS characters that start a field. The quotes are the literal text's,
+ * an expansion's range passed over as a unit, as quote removal reads them.
+ */
+function fieldsAtLeast(value: string, ranges: { start: number; end: number }[], ifs: string): number {
+  const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  let fields = 0;
+  let quote = '';
+  let next = 0;
+
+  for (let i = 0; i < value.length; i++) {
+    if (next < sorted.length && i === sorted[next].start) {
+      let separated = true;
+
+      for (let j = i; j < sorted[next].end; j++) {
+        const c = value[j];
+
+        if (c === utils.FIELD_MARKER) {
+          fields++;
+          separated = true;
+        } else if (quote === '' && ifs.includes(c)) {
+          separated = true;
+        } else if (quote === '' && separated) {
+          fields++;
+          separated = false;
+        }
+      }
+
+      i = sorted[next++].end - 1;
+      continue;
+    }
+
+    const c = value[i];
+
+    if (c === '\\' && quote !== "'") i++;
+    else if (quote === '' && (c === '"' || c === "'")) quote = c;
+    else if (c === quote) quote = '';
+  }
+
+  return fields;
+}
 
 /**
  * How long evaluation runs before it gives the host's event loop a turn. A loop of
@@ -2912,7 +2963,7 @@ export class AstExecutor {
 
       // `declare -a "$name=(a b)"`: a list only once expanded is a string to
       // read as a list, as one written in quotes is
-      args.push(...(declaration ? values.map((value) => quotedListArg(value)) : values));
+      for (const value of values) args.push(declaration ? quotedListArg(value) : value);
 
       // Written as `name[sub]`, bash's W_ARRAYREF: unset expands the subscript no more
       if (ARRAYREF_BUILTINS.has(literalName) && isArrayReference(this.writtenText(arg) ?? arg.text)) {
@@ -4349,7 +4400,7 @@ export class AstExecutor {
     const values: string[] = [];
 
     for (const word of node.wordlist) {
-      values.push(...(await this.resolveExpansions(word, ctx)).values);
+      for (const value of (await this.resolveExpansions(word, ctx)).values) values.push(value);
     }
 
     return values;
@@ -5471,7 +5522,7 @@ export class AstExecutor {
       const close = keyed[i];
 
       if (close === -1) {
-        values.push(...unquoted(element, ranges, ifs));
+        for (const value of unquoted(element, ranges, ifs)) values.push(value);
         continue;
       }
 
@@ -6870,6 +6921,11 @@ export class AstExecutor {
     // (e.g., JSON content like {"key":"value"} should keep its quotes)
     // This also applies IFS field splitting, to unquoted expansion results only
     const ifs = opts.split === false ? '' : this.getIfs(ctx);
+
+    if (value.length > MAX_WORD_FIELDS && fieldsAtLeast(value, protectedRanges, ifs) > MAX_WORD_FIELDS) {
+      throw new TooManyFieldsError(node.text.length > 40 ? `${node.text.slice(0, 40)}…` : node.text, MAX_WORD_FIELDS);
+    }
+
     const unquotedResult = utils.unquoteWordWithProtectedRanges(value, protectedRanges, ifs);
     const result = { values: unquotedResult.values, status };
 
@@ -6905,7 +6961,7 @@ export class AstExecutor {
           if (ctx.getShellOption('nullglob')) continue;
         }
 
-        newValues.push(...matches);
+        for (const match of matches) newValues.push(match);
       }
 
       result.values = newValues;
@@ -6953,7 +7009,7 @@ export class AstExecutor {
       const matches = await expandPattern(pattern, (dir) => this.shell.readDirectory!(ctx, dir), options, stat);
 
       if (matches.length > 0) {
-        out.push(...matches);
+        for (const match of matches) out.push(match);
       } else if (ctx.getShellOption('failglob')) {
         throw new GlobNoMatchError(values[i]);
       } else if (!ctx.getShellOption('nullglob')) {

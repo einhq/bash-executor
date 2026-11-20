@@ -77,7 +77,7 @@ export const setBuiltin: BuiltinHandler = async (
     // -- marks end of options
     if (arg === '--') {
       setPositional = true;
-      positionalArgs.push(...args.slice(i + 1));
+      for (const arg of args.slice(i + 1)) positionalArgs.push(arg);
       break;
     }
 
@@ -153,7 +153,7 @@ export const setBuiltin: BuiltinHandler = async (
 
     // Non-option argument: start of positional parameters
     setPositional = true;
-    positionalArgs.push(...args.slice(i));
+    for (const arg of args.slice(i)) positionalArgs.push(arg);
     break;
   }
 

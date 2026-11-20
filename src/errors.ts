@@ -216,11 +216,35 @@ export class ArithmeticError extends CommandAbortError {
   }
 }
 
+/**
+ * A word whose expansion would split into more than `MAX_WORD_FIELDS` fields:
+ * `$s: expands to more than 1000000 words`. Splitting is one step the event loop
+ * gets no turn in, so a value split into millions would hold it for seconds.
+ */
+export class TooManyFieldsError extends CommandAbortError {
+  constructor(word: string, limit: number) {
+    super(`${word}: expands to more than ${limit} words`, { code: 'E_TOO_MANY_FIELDS' });
+    this.name = 'TooManyFieldsError';
+  }
+}
+
 /** A pattern that matched no file under `shopt -s failglob`: `no match: q*`. */
 export class GlobNoMatchError extends CommandAbortError {
   constructor(readonly pattern: string) {
     super(`no match: ${pattern}`, { code: 'E_GLOB_NO_MATCH' });
     this.name = 'GlobNoMatchError';
+  }
+}
+
+/**
+ * An assignment that would make a variable larger than the context allows
+ * (`ExecContextIf.setValueLimit`): `s: value too large: 33554433 characters, more than 33554432`.
+ * bash has no such bound and runs out of memory instead.
+ */
+export class ValueTooLargeError extends CommandAbortError {
+  constructor(readonly variable: string, size: number, limit: number) {
+    super(`${variable}: value too large: ${size} characters, more than ${limit}`, { code: 'E_VALUE_TOO_LARGE' });
+    this.name = 'ValueTooLargeError';
   }
 }
 
