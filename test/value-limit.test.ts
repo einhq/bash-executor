@@ -45,9 +45,9 @@ Deno.test('the value limit', async (t) => {
 
   await t.step('counts what each element costs over its characters', async () => {
     const shell = new TestShell();
-    shell.ctx.setValueLimit(48);
+    shell.ctx.setValueLimit(96);
     const { stderr } = await shell.executeAndCapture('a=(1 2 3)');
-    assertStringIncludes(stderr, 'a: value too large: 51 characters, more than 48');
+    assertStringIncludes(stderr, 'a: value too large: 99 characters, more than 96');
   });
 
   await t.step('holds in a subshell and a command substitution', async () => {

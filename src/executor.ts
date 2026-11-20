@@ -114,33 +114,28 @@ const UNBOUND_VARIABLE_CODE = 127 as const;
 export const MAX_WORD_FIELDS = 1_000_000;
 
 /**
- * At least how many fields `value` splits into, read in one pass before the
- * splitting: every `FIELD_MARKER`, and in what an expansion gave outside quotes,
- * the IFS characters that start a field. The quotes are the literal text's,
- * an expansion's range passed over as a unit, as quote removal reads them.
+ * At least how many fields `value` splits into, read before the splitting: every
+ * `FIELD_MARKER`, and in what an expansion gave outside quotes, each run of what
+ * IFS does not hold. The quotes are the literal text's, an expansion's range
+ * passed over as a unit, as quote removal reads them. Runs are found with a
+ * regex, as a value may be millions of characters long.
  */
 function fieldsAtLeast(value: string, ranges: { start: number; end: number }[], ifs: string): number {
   const sorted = [...ranges].sort((a, b) => a.start - b.start);
+  const escape = (chars: string) => chars.replace(/[\\\]^-]/g, '\\$&');
+  const run = new RegExp(`[^${escape(ifs)}${utils.FIELD_MARKER}]+|${utils.FIELD_MARKER}`, 'g');
   let fields = 0;
   let quote = '';
   let next = 0;
 
   for (let i = 0; i < value.length; i++) {
     if (next < sorted.length && i === sorted[next].start) {
-      let separated = true;
+      const content = value.slice(i, sorted[next].end);
 
-      for (let j = i; j < sorted[next].end; j++) {
-        const c = value[j];
-
-        if (c === utils.FIELD_MARKER) {
-          fields++;
-          separated = true;
-        } else if (quote === '' && ifs.includes(c)) {
-          separated = true;
-        } else if (quote === '' && separated) {
-          fields++;
-          separated = false;
-        }
+      if (quote === '') {
+        fields += content.match(run)?.length ?? 0;
+      } else {
+        for (let at = content.indexOf(utils.FIELD_MARKER); at !== -1; at = content.indexOf(utils.FIELD_MARKER, at + 1)) fields++;
       }
 
       i = sorted[next++].end - 1;
@@ -156,6 +151,9 @@ function fieldsAtLeast(value: string, ranges: { start: number; end: number }[], 
 
   return fields;
 }
+
+/** The longest word pathname expansion is tried on: far longer than any path. */
+const MAX_GLOB_WORD = 1024 * 1024;
 
 /**
  * How long evaluation runs before it gives the host's event loop a turn. A loop of
@@ -6936,7 +6934,13 @@ export class AstExecutor {
 
     // Pathname expansion done here, from the directories the host lists: each
     // field a pattern in which what the word quoted matches itself
-    if (opts.glob !== false && this.shell.readDirectory && !ctx.getShellOption('noglob')) {
+    // A value with nothing that globs in it is its fields as they are, and so is one longer than
+    // any path, which no pattern of it could match: reading it a character at a time for patterns
+    // is what a value of millions of characters would otherwise cost. That one is left as an
+    // unmatched pattern is, whatever nullglob and failglob say
+    const mayGlob = value.length <= MAX_GLOB_WORD && (/[*?[]/.test(value) || (ctx.getShellOption('extglob') && value.includes('(')));
+
+    if (mayGlob && opts.glob !== false && this.shell.readDirectory && !ctx.getShellOption('noglob')) {
       const patterns = globPatterns(value, protectedRanges, ifs);
 
       if (patterns && patterns.length === result.values.length) {

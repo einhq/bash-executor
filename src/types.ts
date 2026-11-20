@@ -531,7 +531,7 @@ export interface ExecContextIf {
 
   /**
    * The most characters a variable may hold in this context: a string's, or all
-   * an array's elements together, each counting 16 more. An assignment past it aborts its command
+   * an array's elements together, each counting 32 more. An assignment past it aborts its command
    * (`ValueTooLargeError`). `DEFAULT_VALUE_LIMIT` unless set here or above.
    */
   getValueLimit(): number;

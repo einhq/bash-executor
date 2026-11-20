@@ -36,4 +36,20 @@ Deno.test('a loop without I/O', async (t) => {
     const { code, stderr } = await shell.executeAndCapture('f() { while :; do echo x; done; }; f', { signal: controller.signal });
     assertEquals([code, stderr], [1, 'Error: timed out\n']);
   });
+
+  await t.step('holds the event loop for no step of using a value of millions of characters', async () => {
+    const shell = new TestShell();
+    let longest = 0;
+    let last = performance.now();
+    const ticks = setInterval(() => {
+      longest = Math.max(longest, performance.now() - last);
+      last = performance.now();
+    }, 5);
+
+    const { stdout } = await shell.executeAndCapture('s=x; for i in {1..23}; do s=$s$s; done; t=$s; : "$s"; : $s; : x"$s"*; [[ $s == *y ]]; a=("$s"); echo ${#s}');
+    clearInterval(ticks);
+
+    assertEquals(stdout, '8388608\n');
+    assert(longest < 1000, `the longest step held it ${Math.round(longest)} ms`);
+  });
 });

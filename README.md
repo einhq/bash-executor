@@ -50,7 +50,7 @@ abort signal (`ctx.setAbortSignal`, or `signal` to `executeAndCapture`) is raise
 Memory is bounded where bash's is not, so a value that doubles in a loop ends its command rather than the process:
 
 - A variable holds at most 16 Mi characters (`DEFAULT_VALUE_LIMIT`; `ctx.setValueLimit` sets another for a context and
-  those made from it), an array all its elements together, each counting 16 more. An assignment past it aborts its
+  those made from it), an array all its elements together, each counting 32 more. An assignment past it aborts its
   command: `s: value too large: … characters, more than …`. What the shell sets itself, such as `BASH_COMMAND`, is not
   held to it.
 - A word splits into at most a million fields (`MAX_WORD_FIELDS`), counted before the splitting, which is one step the

@@ -33,9 +33,10 @@ export const DEFAULT_VALUE_LIMIT = 16 * 1024 * 1024;
 
 /**
  * What an array's element costs over its characters, about what it takes in
- * memory and to expand: a million empty ones are what 16 Mi characters are.
+ * memory and to expand: half a million empty ones are what 16 Mi characters
+ * are, and expanding them all is a step of a few hundred milliseconds.
  */
-const ELEMENT_COST = 16;
+const ELEMENT_COST = 32;
 
 /**
  * What the shell sets itself, from text that is already there — the command, its
