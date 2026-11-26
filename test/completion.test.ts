@@ -1,5 +1,6 @@
 import { assertEquals } from '@std/assert';
 import { TestShell } from './lib/test-shell.ts';
+import type { ExecContextIf } from '../src/types.ts';
 
 // Each expected text is bash 5.2's for the same script; the COMP_* values were
 // read from an interactive bash given the same line and a Tab
@@ -195,4 +196,41 @@ Deno.test('a Tab, as readline does it', async (t) => {
     assertEquals(await tab(shell, 'df m'), 'df my\\ |');
     assertEquals(await shell.completeTab('nd m'), { line: 'nd m', point: 4, bell: true });
   });
+});
+
+/** A shell whose PATH directories answer a glob after a delay, the first one last. */
+class PathShell extends TestShell {
+  globbing = 0;
+  mostGlobbing = 0;
+  private dirs: Record<string, { delay: number; names: string[] }> = {
+    '/a/bin': { delay: 20, names: ['zz1', 'zzdup'] },
+    '/b/bin': { delay: 0, names: ['zz2', 'zzdup', 'zznox'] },
+  };
+
+  resolvePath = async (_ctx: ExecContextIf, text: string): Promise<string[]> => {
+    const dir = text.slice(0, text.lastIndexOf('/'));
+    const prefix = text.slice(dir.length + 1, -1);
+    const entry = this.dirs[dir];
+
+    this.mostGlobbing = Math.max(this.mostGlobbing, ++this.globbing);
+    await new Promise((resolve) => setTimeout(resolve, entry?.delay ?? 0));
+    this.globbing--;
+
+    const paths = (entry?.names ?? []).filter((name) => name.startsWith(prefix)).map((name) => `${dir}/${name}`);
+
+    return paths.length > 0 ? paths : [text];
+  };
+
+  override async testPath(ctx: ExecContextIf, path: string, op: string): Promise<boolean> {
+    return op === 'EXECUTABLE' ? await !path.endsWith('nox') : await super.testPath(ctx, path, op);
+  }
+}
+
+Deno.test('commands on PATH are globbed in every directory at once, their names in PATH order', async () => {
+  const shell = new PathShell();
+
+  shell.setParams({ PATH: '/a/bin:/b/bin' });
+
+  assertEquals((await shell.runAndCapture('compgen -c zz')).stdout, 'zz1\nzzdup\nzz2\n');
+  assertEquals(shell.mostGlobbing, 2);
 });

@@ -303,24 +303,29 @@ export async function pathWords(ctx: ExecContextIf, shell: ShellIf, word: string
   return dirs;
 }
 
-/** The commands on PATH whose names start with `word`. */
+/**
+ * The commands on PATH whose names start with `word`, the directories globbed
+ * at once and their names taken in PATH order.
+ */
 async function commandFiles(ctx: ExecContextIf, shell: ShellIf, word: string): Promise<string[]> {
   if (word.includes('/')) return await pathWords(ctx, shell, word, false);
+
   if (!shell.resolvePath) return [];
 
-  const names = new Set<string>();
-
-  for (const dir of (ctx.getParams().PATH ?? ctx.getEnv().PATH ?? '').split(':')) {
-    const escaped = word.replace(/[\\*?[\]]/g, '\\$&');
-
-    for (const path of await shell.resolvePath(ctx, `${dir || '.'}/${escaped}*`).catch(() => [] as string[])) {
+  const escaped = word.replace(/[\\*?[\]]/g, '\\$&');
+  const dirs = (ctx.getParams().PATH ?? ctx.getEnv().PATH ?? '').split(':');
+  const found = await Promise.all(dirs.map(async (dir) => {
+    const paths = await shell.resolvePath?.(ctx, `${dir || '.'}/${escaped}*`).catch(() => [] as string[]) ?? [];
+    const names = await Promise.all(paths.map(async (path) => {
       const name = path.slice(path.lastIndexOf('/') + 1);
 
-      if (name !== `${escaped}*` && (await shell.testPath?.(ctx, path, 'EXECUTABLE') ?? true)) names.add(name);
-    }
-  }
+      return name !== `${escaped}*` && (await shell.testPath?.(ctx, path, 'EXECUTABLE') ?? true) ? name : undefined;
+    }));
 
-  return [...names];
+    return names.filter((name) => name !== undefined);
+  }));
+
+  return [...new Set(found.flat())];
 }
 
 /**
